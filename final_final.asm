@@ -5,20 +5,20 @@
 .MODEL SMALL
 .STACK 200h
 
-; ---- BIOS / DOS equates ----------------------------------------
+; --- interruptlar ---
 VIDEO_INT    EQU 10h
 DOS_INT      EQU 21h
-BIOS_KBD     EQU 16h
+KBD_INT      EQU 16h
 
-; ---- Colour attributes -----------------------------------------
-CLR_BG       EQU 01h   ; Dark blue
-CLR_PLAYER   EQU 0Eh   ; Yellow
-CLR_ASTEROID EQU 0Ch   ; Red
-CLR_SHIELD   EQU 0Bh   ; Cyan
-CLR_TEXT     EQU 0Fh   ; White
-CLR_TITLE    EQU 1Fh   ; White on blue
+; --- renkler ---
+CLR_BG       EQU 01h   ; mavi
+CLR_PLAYER   EQU 0Eh   ; sari
+CLR_ASTEROID EQU 0Ch   ; kirmizi
+CLR_SHIELD   EQU 0Ah   ; yesil
+CLR_TEXT     EQU 0Fh   ; beyaz
+CLR_TITLE    EQU 1Fh   ; beyaz mavi
 
-; ---- Game constants --------------------------------------------
+; --- oyun degerleri ---
 SCREEN_W     EQU 40
 PLAY_TOP     EQU 2
 PLAY_BOT     EQU 23
@@ -30,51 +30,58 @@ MAX_LIVES    EQU 3
 SHIELD_PROB  EQU 80
 ROCK_PROB    EQU 8
 
-; ---- Keyboard scan codes ---------------------------------------
+; --- tus kodlari ---
 KEY_LEFT     EQU 4Bh
 KEY_RIGHT    EQU 4Dh
 KEY_ESC      EQU 01h
 
-; ============================================================
+
+
 .DATA
 player_x     DB  20
 player_lives DB  1
 player_dead  DB  0
-score_lo     DW  0
-score_hi     DW  0
 
-; ---- Small Asteroids (1 char: *) -------------------------------
-s_col        DB  MAX_SMALL DUP(0)
-s_row        DB  MAX_SMALL DUP(PLAY_TOP)
-s_delay_max  DB  MAX_SMALL DUP(1)
-s_delay_cur  DB  MAX_SMALL DUP(1)
+; --- kucuk astroidler ---
+s_col         DB  MAX_SMALL DUP(0)
+s_row         DB  MAX_SMALL DUP(PLAY_TOP)
+s_delay_max   DB  MAX_SMALL DUP(1)
+s_delay_cur   DB  MAX_SMALL DUP(1)
 
-; ---- Big Asteroids (2 chars: **) -------------------------------
-b_col        DB  MAX_BIG DUP(0)
-b_row        DB  MAX_BIG DUP(PLAY_TOP)
-b_delay_max  DB  MAX_BIG DUP(1)
-b_delay_cur  DB  MAX_BIG DUP(1)
+; --- buyuk astroidler ---
+b_col         DB  MAX_BIG DUP(0)
+b_row         DB  MAX_BIG DUP(PLAY_TOP)
+b_delay_max   DB  MAX_BIG DUP(1)
+b_delay_cur   DB  MAX_BIG DUP(1)
 
-shld_col     DB  0
-shld_row     DB  0
-shld_active  DB  0
+; --- kalkan ---
+shld_col      DB  0
+shld_row      DB  0
+shld_spawned  DB  0
 
-rand_seed    DW  1234h
+; --- skor ---
+score_val     DW  0          
+score_tick    DB  0          
+score_rate    EQU 10         
+score_buf     DB  '0000', '$'
+              
+; --- random ---              
+rand_seed     DW  1234h
 
-score_val    DW  0          ; Current score
-score_tick   DB  0          ; Counter to slow down score gain
-score_rate   EQU 10         ; Increase score every 10 game loops
-score_buf    DB  '00000', '$'
-  
-
-msg_title    DB  ' ASTROID KACIS  [ESC] CIKIS ', '$'
-msg_lives    DB  'CAN: $'
-msg_score    DB  'SKOR: $'
+; --- mesajlar ---
+msg_title     DB  ' ASTROID KACIS  [ESC] CIKIS ', '$'
+msg_lives     DB  'CAN: $'
+msg_score     DB  'SKOR: $'
 msg_gameover DB  ' OYUN BITTI ! $'
 
-; ============================================================
+
+
+
+
 .CODE
 START:
+
+    ; oyun alanini ayarla,imleci gorunmez yap,seede baslangic deger ver.
     MOV  AX, @DATA
     MOV  DS, AX
     MOV  AX, 0001h
@@ -90,33 +97,47 @@ START:
     CALL DrawHUD
 
 GAME_LOOP:
+
     CALL DoDelay
+    
     CALL IncScore
-    CALL MoveAsteroids
-    CALL SpawnAsteroid
-    CALL HandleShield
-    CALL CheckCollisions
+    
     CALL ReadKey
+    
+    CALL SpawnAsteroid
+    
+    CALL MoveAsteroids
+    
+    CALL SpawnShield
+    
+    CALL MoveShield
+    
+    CALL CheckCollisions
+    
     CALL DrawAll
+    
     CALL DrawHUD
+    
+    
     CMP  BYTE PTR [player_dead], 1
+    
     JNE  GAME_LOOP
 
 GAME_OVER:
+
     MOV  DH, 12
     MOV  DL, 10
     MOV  BL, 0C0h
     LEA  SI, msg_gameover
     CALL PrintStr
     MOV  AH, 00h
-    INT  BIOS_KBD
+    INT  KBD_INT
     MOV  AX, 4C00h
     INT  DOS_INT
 
-; ============================================================
-; PROCEDURES
-; ============================================================
 
+ 
+ 
 DoDelay PROC NEAR
     PUSH CX
     MOV DX, 2
@@ -130,7 +151,10 @@ DL_INNER:
     RET
 DoDelay ENDP
 
+
+
 GetRand PROC NEAR
+    ;LCG kullanarak pseudo random sayi uretir
     PUSH DX
     MOV  AX, [rand_seed]
     MOV  DX, 8405h
@@ -142,6 +166,84 @@ GetRand PROC NEAR
     POP  DX
     RET
 GetRand ENDP
+
+
+
+SpawnAsteroid PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+
+    CALL GetRand
+    XOR AH, AH
+    MOV BL, ROCK_PROB
+    DIV BL
+    CMP AH, 0
+    JNE SA_EXIT
+
+    CALL GetRand
+    AND AL, 03h
+    CMP AL, 0
+    JE  TRY_BIG
+
+TRY_SMALL:
+    MOV SI, 0
+SA_S_LOOP:
+    CMP SI, MAX_SMALL
+    JGE SA_EXIT
+    CMP BYTE PTR [s_col+SI], 0
+    JE  SA_S_OK
+    INC SI
+    JMP SA_S_LOOP
+
+SA_S_OK:
+    CALL GetRand
+    XOR AH, AH
+    MOV BL, 37
+    DIV BL
+    ADD AH, PLAY_LEFT
+    MOV [s_col+SI], AH
+    MOV BYTE PTR [s_row+SI], PLAY_TOP
+    CALL GetSpeed
+    MOV [s_delay_max+SI], AL
+    MOV [s_delay_cur+SI], AL
+    JMP SA_EXIT
+
+TRY_BIG:
+    MOV SI, 0
+SA_B_LOOP:
+    CMP SI, MAX_BIG
+    JGE TRY_SMALL
+    CMP BYTE PTR [b_col+SI], 0
+    JE  SA_B_OK
+    INC SI
+    JMP SA_B_LOOP
+
+SA_B_OK:
+    CALL GetRand
+    XOR AH, AH
+    MOV BL, 36
+    DIV BL
+    ADD AH, PLAY_LEFT
+    MOV [b_col+SI], AH
+    MOV BYTE PTR [b_row+SI], PLAY_TOP
+    CALL GetSpeed
+    MOV [b_delay_max+SI], AL
+    MOV [b_delay_cur+SI], AL
+
+SA_EXIT:
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+SpawnAsteroid ENDP
+
+
+
 
 MoveAsteroids PROC NEAR
     PUSH AX
@@ -206,78 +308,8 @@ MA_DONE:
     RET
 MoveAsteroids ENDP
 
-SpawnAsteroid PROC NEAR
-    PUSH AX
-    PUSH BX
-    PUSH CX
-    PUSH DX
-    PUSH SI
 
-    CALL GetRand
-    XOR AH, AH
-    MOV BL, ROCK_PROB
-    DIV BL
-    CMP AH, 0
-    JNE SA_EXIT
 
-    CALL GetRand
-    AND AL, 03h
-    CMP AL, 0
-    JE  TRY_BIG
-
-TRY_SMALL:
-    MOV SI, 0
-SA_S_L:
-    CMP SI, MAX_SMALL
-    JGE SA_EXIT
-    CMP BYTE PTR [s_col+SI], 0
-    JE  SA_S_OK
-    INC SI
-    JMP SA_S_L
-
-SA_S_OK:
-    CALL GetRand
-    XOR AH, AH
-    MOV BL, 37
-    DIV BL
-    ADD AH, PLAY_LEFT
-    MOV [s_col+SI], AH
-    MOV BYTE PTR [s_row+SI], PLAY_TOP
-    CALL GetSpeed
-    MOV [s_delay_max+SI], AL
-    MOV [s_delay_cur+SI], AL
-    JMP SA_EXIT
-
-TRY_BIG:
-    MOV SI, 0
-SA_B_L:
-    CMP SI, MAX_BIG
-    JGE TRY_SMALL
-    CMP BYTE PTR [b_col+SI], 0
-    JE  SA_B_OK
-    INC SI
-    JMP SA_B_L
-
-SA_B_OK:
-    CALL GetRand
-    XOR AH, AH
-    MOV BL, 36
-    DIV BL
-    ADD AH, PLAY_LEFT
-    MOV [b_col+SI], AH
-    MOV BYTE PTR [b_row+SI], PLAY_TOP
-    CALL GetSpeed
-    MOV [b_delay_max+SI], AL
-    MOV [b_delay_cur+SI], AL
-
-SA_EXIT:
-    POP SI
-    POP DX
-    POP CX
-    POP BX
-    POP AX
-    RET
-SpawnAsteroid ENDP
 
 GetSpeed PROC NEAR
     CALL GetRand
@@ -288,6 +320,8 @@ GetSpeed PROC NEAR
     MOV AL, AH
     RET
 GetSpeed ENDP
+
+
 
 CheckCollisions PROC NEAR
     PUSH AX
@@ -321,7 +355,8 @@ HIT_S:
 
 CC_B:
     ; Big Collisions
-    MOV SI, 0
+    MOV SI, 0  
+    
 CC_B_L:
     CMP SI, MAX_BIG
     JGE CC_SHLD
@@ -334,7 +369,8 @@ CC_B_L:
     JE  HIT_B
     INC CL
     CMP AL, CL
-    JE  HIT_B
+    JE  HIT_B 
+    
 CC_B_N:
     INC SI
     JMP CC_B_L
@@ -349,14 +385,14 @@ CC_CHECK_DEAD:
     MOV BYTE PTR [player_dead], 1
 
 CC_SHLD:
-    CMP BYTE PTR [shld_active], 0
+    CMP BYTE PTR [shld_spawned], 0
     JE  CC_DONE
     CMP [shld_row], BL
     JNE CC_DONE
     MOV CL, [shld_col]
     CMP AL, CL
     JNE CC_DONE
-    MOV BYTE PTR [shld_active], 0
+    MOV BYTE PTR [shld_spawned], 0
     CMP BYTE PTR [player_lives], MAX_LIVES
     JGE CC_DONE
     INC BYTE PTR [player_lives]
@@ -368,7 +404,9 @@ CC_DONE:
     POP BX
     POP AX
     RET
-CheckCollisions ENDP
+CheckCollisions ENDP  
+
+
 
 DrawAll PROC NEAR
     PUSH AX
@@ -429,7 +467,7 @@ D_B_N:
     JMP D_B_L
 
 D_SHLD:
-    CMP BYTE PTR [shld_active], 0
+    CMP BYTE PTR [shld_spawned], 0
     JE  D_DONE
     MOV DL, [shld_col]
     MOV DH, [shld_row]
@@ -446,7 +484,10 @@ D_DONE:
     RET
 DrawAll ENDP
 
-; --- Reused Utility Procedures ---
+
+
+
+
 ClearPlayfield PROC NEAR
     MOV DH, PLAY_TOP
 CP_R: MOV DL, 0
@@ -463,14 +504,18 @@ CP_C: CALL SetCursor
     CMP DH, PLAY_BOT+1
     JL CP_R
     RET
-ClearPlayfield ENDP
+ClearPlayfield ENDP 
+
+
 
 SetCursor PROC NEAR
     MOV AH, 02h
     MOV BH, 0
     INT VIDEO_INT
     RET
-SetCursor ENDP
+SetCursor ENDP    
+
+
 
 PrintChar PROC NEAR
     CALL SetCursor
@@ -479,7 +524,9 @@ PrintChar PROC NEAR
     MOV CX, 1
     INT VIDEO_INT
     RET
-PrintChar ENDP
+PrintChar ENDP     
+
+
 
 PrintStr PROC NEAR
 PS_L: MOV AL, [SI]
@@ -490,12 +537,12 @@ PS_L: MOV AL, [SI]
     INC DL
     JMP PS_L
 PS_D: RET
-PrintStr ENDP
+PrintStr ENDP   
+
+
 
 DrawHUD PROC NEAR
-    ; 1) DO THE MATH FIRST
-    ; This fills the buffer. We do this first so the 'DX' register 
-    ; used in math doesn't mess up our coordinates later.
+
     CALL ScoreToStr     
 
     ; 2) DRAW TITLE
@@ -513,7 +560,7 @@ DrawHUD PROC NEAR
     CALL PrintStr
     MOV AL, [player_lives]
     ADD AL, '0'
-    MOV BL, 0Ah 
+    MOV BL, CLR_SHIELD 
     CALL PrintChar
 
     ; 4) DRAW SCORE LABEL
@@ -530,7 +577,7 @@ DrawHUD PROC NEAR
     MOV DL, 16
     CALL SetCursor      ; Force cursor to column 16
     LEA SI, score_buf
-    MOV BL, 0Eh         ; Yellow score
+    MOV BL, CLR_PLAYER         ; Yellow score
     CALL PrintStr
     RET
 DrawHUD ENDP
@@ -544,13 +591,13 @@ ScoreToStr PROC NEAR
     
     ; Clear buffer
     LEA DI, score_buf
-    MOV CX, 5
+    MOV CX, 4
     MOV AL, '0'
     REP STOSB
     
     ; Convert score_val (or score_lo)
     MOV AX, [score_val] ; Use whichever variable name you have
-    LEA DI, score_buf+4 
+    LEA DI, score_buf+3 
     MOV BX, 10
     
 S_CONV:
@@ -597,15 +644,22 @@ EraseAt PROC NEAR
     RET
 EraseAt ENDP
 
-HandleShield PROC NEAR
-    CMP BYTE PTR [shld_active], 0
-    JNE HS_M
+
+SpawnShield PROC NEAR
+    PUSH AX
+    PUSH BX
+
+    CMP BYTE PTR [shld_spawned], 1  ; Is there already one on screen?
+    JE  SH_EXIT                    ; If yes, don't spawn another
+
     CALL GetRand
     XOR AH, AH
-    MOV BL, SHIELD_PROB
+    MOV BL, SHIELD_PROB            ; Probability check
     DIV BL
     CMP AH, 0
-    JNE HS_X
+    JNE SH_EXIT                    ; Failed the spawn roll
+
+    ; Setup new health item at the top
     CALL GetRand
     XOR AH, AH
     MOV BL, 37
@@ -613,33 +667,58 @@ HandleShield PROC NEAR
     ADD AH, PLAY_LEFT
     MOV [shld_col], AH
     MOV BYTE PTR [shld_row], PLAY_TOP
-    MOV BYTE PTR [shld_active], 1
+    MOV BYTE PTR [shld_spawned], 1
+
+SH_EXIT:
+    POP BX
+    POP AX
     RET
-HS_M:
+SpawnShield ENDP
+
+
+
+MoveShield PROC NEAR
+    PUSH AX
+    PUSH DX
+
+    CMP BYTE PTR [shld_spawned], 0
+    JE  MS_EXIT                    ; Nothing to move
+
+    ; Erase current position
     MOV DL, [shld_col]
     MOV DH, [shld_row]
     CALL EraseAt
+
+    ; Increment row
     INC BYTE PTR [shld_row]
+
+    ; Check if it hit the bottom of the playfield
     CMP BYTE PTR [shld_row], PLAY_BOT+1
-    JL HS_X
-    MOV BYTE PTR [shld_active], 0
-HS_X: RET
-HandleShield ENDP
+    JL  MS_EXIT                    ; Still falling
+    MOV BYTE PTR [shld_spawned], 0  ; Despawn if it hits the bottom
+
+MS_EXIT:
+    POP DX
+    POP AX
+    RET
+MoveShield ENDP
 
 ReadKey PROC NEAR
     MOV AH, 01h
-    INT 16h
+    INT KBD_INT
     JZ RK_X
     MOV AH, 00h
-    INT 16h
+    INT KBD_INT
     CMP AH, KEY_ESC
     JNE RK_L
-    MOV BYTE PTR [player_dead], 1
+    MOV BYTE PTR [player_dead], 1 
+    
 RK_L: CMP AH, KEY_LEFT
     JNE RK_R
     CMP BYTE PTR [player_x], PLAY_LEFT+1
     JLE RK_X
     DEC BYTE PTR [player_x]
+    
 RK_R: CMP AH, KEY_RIGHT
     JNE RK_X
     CMP BYTE PTR [player_x], PLAY_RIGHT-1
